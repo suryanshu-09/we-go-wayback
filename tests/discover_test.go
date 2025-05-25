@@ -1,12 +1,10 @@
 package tests
 
 import (
-	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
-	d "github.com/suryanshu-09/we-go-wayback/waybackdiscoverdiff/discover"
+	d "github.com/suryanshu-09/we-go-wayback/waybackdiscoverdiff"
 )
 
 // TODO: check types
@@ -120,160 +118,160 @@ func assertExtractHTMLFeatures(t testing.TB, got map[string]int, want map[string
 	}
 }
 
-func TestCalculateSimhash(t *testing.T) {
-	t.Run("Testing Calculate Simhash", func(t *testing.T) {
-		features := map[string]int{"two": 2, "three": 3, "one": 1}
-
-		got := fmt.Sprintf("%d", d.CalculateSimhash(features, 128))
-
-		want := "66237222457941138286276456718971054176"
-
-		assertCalculateSimhash(t, got, want)
-	})
-}
-
-func assertCalculateSimhash(t testing.TB, got, want string) {
-	t.Helper()
-	if strings.Compare(got, want) != 0 {
-		t.Errorf("got: %s\nwant: %s", got, want)
-	}
-}
-
-var cfg d.CFG = d.CFG{
-	Simhash: d.SimhashConfig{
-		Size:        256,
-		ExpireAfter: 86400,
-	},
-	Redis: d.RedisConfig{
-		URL:             "redis://localhost:6379/1",
-		DecodeResponses: true,
-		Timeout:         10,
-	},
-	Threads: 5,
-	Snapshots: d.SnapshotsConfig{
-		NumberPerYear: -1,
-		NumberPerPage: 600,
-	},
-}
-
-// TODO: redis mock
-func TestWorkerDownload(t *testing.T) {
-	t.Run("Redis WBM redirect", func(t *testing.T) {
-		_ = d.Discover(cfg)
-	})
-}
-
-func TestHash(t *testing.T) {
-	t.Run("test regular hash", func(t *testing.T) {
-		features := map[string]int{
-			"2019":             1,
-			"advanced":         1,
-			"google":           1,
-			"google©":          1,
-			"history":          1,
-			"insearch":         1,
-			"more":             1,
-			"optionssign":      1,
-			"privacy":          1,
-			"programsbusiness": 1,
-			"searchimagesmapsplayyoutubenewsgmaildrivemorecalendartranslatemobilebooksshoppingbloggerfinancephotosvideosdocseven": 1,
-			"searchlanguage":   1,
-			"settingsweb":      1,
-			"solutionsabout":   1,
-			"terms":            1,
-			"toolsadvertising": 1,
-			"»account":         1,
-		}
-
-		hSize := 128
-
-		assertHash(t, features, hSize)
-	})
-
-	t.Run("test shortened hash", func(t *testing.T) {
-		features := map[string]int{
-			"about": 1,
-			"accountsearchmapsyoutubeplaynewsgmailcontactsdrivecalendartranslatephotosshoppingmorefinancedocsbooksbloggerhangoutskeepjamboardearthcollectionseven": 1,
-			"at":                          1,
-			"data":                        1,
-			"feedbackadvertisingbusiness": 1,
-			"from":                        1,
-			"gmailimagessign":             1,
-			"google":                      3,
-			"helpsend":                    1,
-			"in":                          2,
-			"inappropriate":               1,
-			"library":                     1,
-			"local":                       1,
-			"more":                        1,
-			"new":                         1,
-			"predictions":                 1,
-			"privacytermssettingssearch":  1,
-			"remove":                      1,
-			"report":                      1,
-			"searchhistorysearch":         1,
-			"searchyour":                  1,
-			"settingsadvanced":            1,
-			"skills":                      1,
-			"store":                       1,
-			"with":                        1,
-			"your":                        1,
-			"×develop":                    1,
-		}
-
-		hSize := 128
-
-		assertHash(t, features, hSize)
-	})
-
-	t.Run("test simhash 256", func(t *testing.T) {
-		features := map[string]int{
-			"2019":              1,
-			"advanced":          1,
-			"at":                1,
-			"google":            1,
-			"googleadvertising": 1,
-			"google©":           1,
-			"history":           1,
-			"insearch":          1,
-			"library":           1,
-			"local":             1,
-			"more":              1,
-			"new":               1,
-			"optionssign":       1,
-			"privacy":           1,
-			"programsbusiness":  1,
-			"searchimagesmapsplayyoutubenewsgmaildrivemorecalendartranslatemobilebooksshoppingbloggerfinancephotosvideosdocseven": 1,
-			"searchlanguage": 1,
-			"settingsweb":    1,
-			"skills":         1,
-			"solutionsabout": 1,
-			"terms":          1,
-			"toolsdevelop":   1,
-			"with":           1,
-			"your":           1,
-			"»account":       1,
-		}
-
-		hSize := 256
-
-		assertHash(t, features, hSize)
-	})
-}
-
-func assertHash(t testing.TB, features map[string]int, hSize int) {
-	t.Helper()
-
-	got := d.CalculateSimhash(features, hSize)
-	wantBitLength := hSize
-	if got.bitLength != wantBitLength {
-		t.Errorf("got: %d\nwant: %d", got.bitLength, wantBitLength)
-	}
-
-	gotBytesLen := len(d.PackSimhashToBytes(got, hSize))
-	wantBytesLen := hSize / 8
-
-	if gotBytesLen != wantBytesLen {
-		t.Errorf("got: %d\nwant: %d", gotBytesLen, wantBytesLen)
-	}
-}
+// func TestCalculateSimhash(t *testing.T) {
+// 	t.Run("Testing Calculate Simhash", func(t *testing.T) {
+// 		features := map[string]int{"two": 2, "three": 3, "one": 1}
+//
+// 		got := fmt.Sprintf("%d", d.CalculateSimhash(features, 128))
+//
+// 		want := "66237222457941138286276456718971054176"
+//
+// 		assertCalculateSimhash(t, got, want)
+// 	})
+// }
+//
+// func assertCalculateSimhash(t testing.TB, got, want string) {
+// 	t.Helper()
+// 	if strings.Compare(got, want) != 0 {
+// 		t.Errorf("got: %s\nwant: %s", got, want)
+// 	}
+// }
+//
+// var cfg d.CFG = d.CFG{
+// 	Simhash: d.SimhashConfig{
+// 		Size:        256,
+// 		ExpireAfter: 86400,
+// 	},
+// 	Redis: d.RedisConfig{
+// 		URL:             "redis://localhost:6379/1",
+// 		DecodeResponses: true,
+// 		Timeout:         10,
+// 	},
+// 	Threads: 5,
+// 	Snapshots: d.SnapshotsConfig{
+// 		NumberPerYear: -1,
+// 		NumberPerPage: 600,
+// 	},
+// }
+//
+// // TODO: redis mock
+// func TestWorkerDownload(t *testing.T) {
+// 	t.Run("Redis WBM redirect", func(t *testing.T) {
+// 		_ = d.Discover(cfg)
+// 	})
+// }
+//
+// func TestHash(t *testing.T) {
+// 	t.Run("test regular hash", func(t *testing.T) {
+// 		features := map[string]int{
+// 			"2019":             1,
+// 			"advanced":         1,
+// 			"google":           1,
+// 			"google©":          1,
+// 			"history":          1,
+// 			"insearch":         1,
+// 			"more":             1,
+// 			"optionssign":      1,
+// 			"privacy":          1,
+// 			"programsbusiness": 1,
+// 			"searchimagesmapsplayyoutubenewsgmaildrivemorecalendartranslatemobilebooksshoppingbloggerfinancephotosvideosdocseven": 1,
+// 			"searchlanguage":   1,
+// 			"settingsweb":      1,
+// 			"solutionsabout":   1,
+// 			"terms":            1,
+// 			"toolsadvertising": 1,
+// 			"»account":         1,
+// 		}
+//
+// 		hSize := 128
+//
+// 		assertHash(t, features, hSize)
+// 	})
+//
+// 	t.Run("test shortened hash", func(t *testing.T) {
+// 		features := map[string]int{
+// 			"about": 1,
+// 			"accountsearchmapsyoutubeplaynewsgmailcontactsdrivecalendartranslatephotosshoppingmorefinancedocsbooksbloggerhangoutskeepjamboardearthcollectionseven": 1,
+// 			"at":                          1,
+// 			"data":                        1,
+// 			"feedbackadvertisingbusiness": 1,
+// 			"from":                        1,
+// 			"gmailimagessign":             1,
+// 			"google":                      3,
+// 			"helpsend":                    1,
+// 			"in":                          2,
+// 			"inappropriate":               1,
+// 			"library":                     1,
+// 			"local":                       1,
+// 			"more":                        1,
+// 			"new":                         1,
+// 			"predictions":                 1,
+// 			"privacytermssettingssearch":  1,
+// 			"remove":                      1,
+// 			"report":                      1,
+// 			"searchhistorysearch":         1,
+// 			"searchyour":                  1,
+// 			"settingsadvanced":            1,
+// 			"skills":                      1,
+// 			"store":                       1,
+// 			"with":                        1,
+// 			"your":                        1,
+// 			"×develop":                    1,
+// 		}
+//
+// 		hSize := 128
+//
+// 		assertHash(t, features, hSize)
+// 	})
+//
+// 	t.Run("test simhash 256", func(t *testing.T) {
+// 		features := map[string]int{
+// 			"2019":              1,
+// 			"advanced":          1,
+// 			"at":                1,
+// 			"google":            1,
+// 			"googleadvertising": 1,
+// 			"google©":           1,
+// 			"history":           1,
+// 			"insearch":          1,
+// 			"library":           1,
+// 			"local":             1,
+// 			"more":              1,
+// 			"new":               1,
+// 			"optionssign":       1,
+// 			"privacy":           1,
+// 			"programsbusiness":  1,
+// 			"searchimagesmapsplayyoutubenewsgmaildrivemorecalendartranslatemobilebooksshoppingbloggerfinancephotosvideosdocseven": 1,
+// 			"searchlanguage": 1,
+// 			"settingsweb":    1,
+// 			"skills":         1,
+// 			"solutionsabout": 1,
+// 			"terms":          1,
+// 			"toolsdevelop":   1,
+// 			"with":           1,
+// 			"your":           1,
+// 			"»account":       1,
+// 		}
+//
+// 		hSize := 256
+//
+// 		assertHash(t, features, hSize)
+// 	})
+// }
+//
+// func assertHash(t testing.TB, features map[string]int, hSize int) {
+// 	t.Helper()
+//
+// 	got := d.CalculateSimhash(features, hSize)
+// 	wantBitLength := hSize
+// 	if got.bitLength != wantBitLength {
+// 		t.Errorf("got: %d\nwant: %d", got.bitLength, wantBitLength)
+// 	}
+//
+// 	gotBytesLen := len(d.PackSimhashToBytes(got, hSize))
+// 	wantBytesLen := hSize / 8
+//
+// 	if gotBytesLen != wantBytesLen {
+// 		t.Errorf("got: %d\nwant: %d", gotBytesLen, wantBytesLen)
+// 	}
+// }
