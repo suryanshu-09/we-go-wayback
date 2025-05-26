@@ -1,9 +1,11 @@
 package waybackdiscoverdiff
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 
+	s "github.com/mfonda/simhash"
 	"golang.org/x/net/html"
 )
 
@@ -89,14 +91,25 @@ func ExtractHTMLFeatures(htmlContent string) map[string]int {
 	return features
 }
 
-func CalculateSimhash(features map[string]int, bitLength int) (simhash string) {
+type Simhash struct {
+	Hash      uint64
+	BitLength int
+}
+
+func CalculateSimhash(features map[string]int, bitLength int) (simhash Simhash) {
+	stringFeatures := fmt.Sprint(features)
+	byteFeatures := []byte(stringFeatures)
+	hash := s.Simhash(s.NewWordFeatureSet(byteFeatures))
+	simhash.Hash = hash
+	simhash.BitLength = bitLength
 	return
+}
+
+func PackSimhashToBytes(simhash Simhash, bitLength int) int {
+	// return bits.Len64(simhash.Hash)
+	return bitLength / 8
 }
 
 func Discover(cfg CFG) (__something__ interface{}) {
-	return
-}
-
-func PackSimhashToBytes(simhash string, bitLength int) (__something__ interface{}) {
 	return
 }
