@@ -157,30 +157,32 @@ func assertCalculateSimhash(t testing.TB, got, want string) {
 	}
 }
 
-//	var cfg d.CFG = d.CFG{
-//		Simhash: d.SimhashConfig{
-//			Size:        256,
-//			ExpireAfter: 86400,
-//		},
-//		Redis: d.RedisConfig{
-//			URL:             "redis://localhost:6379/1",
-//			DecodeResponses: true,
-//			Timeout:         10,
-//		},
-//		Threads: 5,
-//		Snapshots: d.SnapshotsConfig{
-//			NumberPerYear: -1,
-//			NumberPerPage: 600,
-//		},
-//	}
-//
-// // TODO: redis mock
-//
-//	func TestWorkerDownload(t *testing.T) {
-//		t.Run("Redis WBM redirect", func(t *testing.T) {
-//			_ = d.Discover(cfg)
-//		})
-//	}
+// var cfg = d.CFG{
+// 	Simhash: d.SimhashConfig{
+// 		Size:        256,
+// 		ExpireAfter: 86400,
+// 	},
+// 	Redis: d.RedisConfig{
+// 		URL:             "redis://localhost:6379/1",
+// 		DecodeResponses: true,
+// 		Timeout:         10,
+// 	},
+// 	Threads: 5,
+// 	Snapshots: d.SnapshotsConfig{
+// 		NumberPerYear: -1,
+// 		NumberPerPage: 600,
+// 	},
+// }
+
+// TODO: redis mock
+// func TestWorkerDownload(t *testing.T) {
+// 	t.Run("Redis WBM redirect", func(t *testing.T) {
+// 		discover := d.Discover{Cfg: cfg}
+// 		discover.Url = "https://iskme.org"
+// 		discover.DownloadCapture("20190103133511")
+// 	})
+// }
+
 func TestHash(t *testing.T) {
 	t.Run("test regular hash", func(t *testing.T) {
 		features := map[string]int{

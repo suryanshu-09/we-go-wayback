@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+
+	d "github.com/suryanshu-09/we-go-wayback/waybackdiscoverdiff"
 )
 
-func main() {
-	fmt.Println("Hello from We-Go-Wayback!")
-}
+// func main() {
+// 	fmt.Println("Hello from We-Go-Wayback!")
+// }
 
 // var ctx = context.Background()
 //
@@ -39,3 +41,21 @@ func main() {
 // 	// Output: key value
 // 	// key2 does not exist
 // }
+
+func main() {
+	html := `<Html>
+    <something>weird is happening \c\x0b
+    <span>tag</span><span>tag</span>
+    </HTML>`
+
+	features := map[string]int{"c": 1, "weird": 1, "is": 1, "happening": 1, "tag": 2}
+	got := d.ExtractHTMLFeatures(html)
+	fmt.Println(got)
+	fmt.Println(features)
+	// escaped := `Invalid /\x94Invalid\x0b`
+	// parsed, err := strconv.Unquote(`"` + escaped + `"`)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// fmt.Println(parsed)
+}

@@ -2,6 +2,7 @@ package waybackdiscoverdiff
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -9,30 +10,8 @@ import (
 	"golang.org/x/net/html"
 )
 
-// TODO: fix types
-// TODO: implementation details
-type SimhashConfig struct {
-	Size        int
-	ExpireAfter int
-}
-
-type RedisConfig struct {
-	URL             string
-	DecodeResponses bool
-	Timeout         int
-}
-
-type SnapshotsConfig struct {
-	NumberPerYear int
-	NumberPerPage int
-}
-
-type CFG struct {
-	Simhash   SimhashConfig
-	Redis     RedisConfig
-	Threads   int
-	Snapshots SnapshotsConfig
-}
+// TODO: Discover Class
+// DONE: ExtractHTMLFeatures
 
 // Process HTML document and get key features as text. Steps:
 // kill all script and style elements
@@ -44,11 +23,16 @@ type CFG struct {
 // return a dict with features and their weights
 
 func ExtractHTMLFeatures(htmlContent string) map[string]int {
+	// fmt.Println(htmlContent)
 	doc, err := html.Parse(strings.NewReader(htmlContent))
 	if err != nil {
 		return nil
 	}
+
+	// return a dict with features and their weights
+	features := make(map[string]int)
 	var featureData []string
+
 	for n := range doc.Descendants() {
 		switch n.Type {
 		case html.ElementNode:
@@ -62,27 +46,40 @@ func ExtractHTMLFeatures(htmlContent string) map[string]int {
 			continue
 		case html.TextNode:
 			// get lowercase text
-			lowercaseData := strings.ToLower(n.Data)
+			lowercaseData := strings.Fields(strings.ToLower(n.Data))
+
 			var builder strings.Builder
-			for _, r := range lowercaseData {
-				// remove punctuation
-				if unicode.IsPunct(r) {
-					if r == '\\' {
+			for _, str := range lowercaseData {
+				for i, r := range str {
+					// remove punctuation
+					if r == '/' {
+						continue
+					}
+
+					if r == '\\' && str[i+1] == 'x' {
 						builder.WriteRune(r)
 						continue
 					}
-					builder.WriteRune(' ')
-					continue
+
+					if unicode.IsControl(r) || unicode.IsPunct(r) {
+						builder.WriteRune(' ')
+						continue
+					}
+					builder.WriteRune(r)
 				}
-				builder.WriteRune(r)
+				builder.WriteRune(' ')
+				fmt.Println(builder.String())
 			}
-			cleanData := builder.String()
-			featureData = append(featureData, strings.Fields(cleanData)...)
+			unquoted, err := strconv.Unquote(`"` + builder.String() + `"`)
+			if err == nil {
+				cleanData := strings.Fields(unquoted)
+				featureData = append(featureData, cleanData...)
+			} else {
+				cleanData := strings.Fields(builder.String())
+				featureData = append(featureData, cleanData...)
+			}
 		}
 	}
-
-	// return a dict with features and their weights
-	features := make(map[string]int)
 
 	for _, feat := range featureData {
 		features[feat]++
@@ -108,8 +105,4 @@ func CalculateSimhash(features map[string]int, bitLength int) (simhash Simhash) 
 func PackSimhashToBytes(simhash Simhash, bitLength int) int {
 	// return bits.Len64(simhash.Hash)
 	return bitLength / 8
-}
-
-func Discover(cfg CFG) (__something__ interface{}) {
-	return
 }
