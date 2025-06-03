@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	s "github.com/suryanshu-09/simhash/simhash"
 	d "github.com/suryanshu-09/we-go-wayback/waybackdiscoverdiff"
 )
 
-// TODO: check types
 func TestExtractHTMLFeatures(t *testing.T) {
 	t.Run("handle html with repeated elements and spaces", func(t *testing.T) {
 		html := `<html>
@@ -277,23 +277,33 @@ func TestHash(t *testing.T) {
 
 		hSize := 256
 
-		assertHash(t, features, hSize)
+		assertHash(t, features, hSize, d.CustomHashFunc)
 	})
 }
 
-func assertHash(t testing.TB, features map[string]int, hSize int) {
+func assertHash(t testing.TB, features map[string]int, hSize int, hashFuncs ...s.HashFunc) {
 	t.Helper()
 
-	got := d.CalculateSimhash(features, hSize)
-	wantBitLength := hSize
-	if got.BitLength != wantBitLength {
-		t.Errorf("got: %d\nwant: %d", got.BitLength, wantBitLength)
-	}
+	var got d.Simhash
+	if len(hashFuncs) > 0 && hashFuncs[0] != nil {
+		got = d.CalculateSimhash(features, hSize, hashFuncs[0])
+		wantBitLength := hSize
+		if got.BitLength != wantBitLength {
+			t.Errorf("got: %d\nwant: %d", got.BitLength, wantBitLength)
+		}
 
-	gotBytesLen := d.PackSimhashToBytes(got, hSize)
+	} else {
+		got = d.CalculateSimhash(features, hSize)
+		wantBitLength := hSize
+		if got.BitLength != wantBitLength {
+			t.Errorf("got: %d\nwant: %d", got.BitLength, wantBitLength)
+		}
+
+	}
+	gotBytes := d.PackSimhashToBytes(&got, hSize)
 	wantBytesLen := hSize / 8
 
-	if gotBytesLen != wantBytesLen {
-		t.Errorf("got: %d\nwant: %d", gotBytesLen, wantBytesLen)
+	if len(gotBytes) != wantBytesLen {
+		t.Errorf("got: %d\nwant: %d", len(gotBytes), wantBytesLen)
 	}
 }

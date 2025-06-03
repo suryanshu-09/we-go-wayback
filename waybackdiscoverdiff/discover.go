@@ -1,12 +1,13 @@
 package waybackdiscoverdiff
 
 import (
-	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"unicode"
 
-	s "github.com/mfonda/simhash"
+	s "github.com/suryanshu-09/simhash/simhash"
+	"golang.org/x/crypto/blake2b"
 	"golang.org/x/net/html"
 )
 
@@ -23,20 +24,17 @@ import (
 // return a dict with features and their weights
 
 func ExtractHTMLFeatures(htmlContent string) map[string]int {
-	// fmt.Println(htmlContent)
 	doc, err := html.Parse(strings.NewReader(htmlContent))
 	if err != nil {
 		return nil
 	}
 
-	// return a dict with features and their weights
 	features := make(map[string]int)
 	var featureData []string
 
 	for n := range doc.Descendants() {
 		switch n.Type {
 		case html.ElementNode:
-			// kill all script and style elements
 			if n.Data == "script" || n.Data == "style" {
 				// fmt.Println("script or style tags")
 				continue
@@ -45,13 +43,11 @@ func ExtractHTMLFeatures(htmlContent string) map[string]int {
 			// fmt.Println("CommentNode")
 			continue
 		case html.TextNode:
-			// get lowercase text
 			lowercaseData := strings.Fields(strings.ToLower(n.Data))
 
 			var builder strings.Builder
 			for _, str := range lowercaseData {
 				for i, r := range str {
-					// remove punctuation
 					if r == '/' {
 						continue
 					}
@@ -68,7 +64,6 @@ func ExtractHTMLFeatures(htmlContent string) map[string]int {
 					builder.WriteRune(r)
 				}
 				builder.WriteRune(' ')
-				fmt.Println(builder.String())
 			}
 			unquoted, err := strconv.Unquote(`"` + builder.String() + `"`)
 			if err == nil {
@@ -89,20 +84,43 @@ func ExtractHTMLFeatures(htmlContent string) map[string]int {
 }
 
 type Simhash struct {
-	Hash      uint64
+	Hash      *big.Int
 	BitLength int
 }
 
-func CalculateSimhash(features map[string]int, bitLength int) (simhash Simhash) {
-	stringFeatures := fmt.Sprint(features)
-	byteFeatures := []byte(stringFeatures)
-	hash := s.Simhash(s.NewWordFeatureSet(byteFeatures))
-	simhash.Hash = hash
-	simhash.BitLength = bitLength
-	return
+func CalculateSimhash(features map[string]int, bitLength int, hashFuncs ...s.HashFunc) (simhash Simhash) {
+	var hash *s.Simhash
+	if len(hashFuncs) > 0 && hashFuncs[0] != nil {
+		hash = s.NewSimhash(features, s.WithF(bitLength), s.WithHashFunc(hashFuncs[0]))
+	} else {
+		hash = s.NewSimhash(features, s.WithF(bitLength))
+	}
+
+	return Simhash{
+		Hash:      hash.Value,
+		BitLength: bitLength,
+	}
 }
 
-func PackSimhashToBytes(simhash Simhash, bitLength int) int {
-	// return bits.Len64(simhash.Hash)
-	return bitLength / 8
+func PackSimhashToBytesBig(simhash *Simhash, bitLength int) []byte {
+	var sizeInBytes int
+	if bitLength == 0 {
+		sizeInBytes = (simhash.BitLength + 7) / 8
+	} else {
+		sizeInBytes = bitLength / 8
+	}
+	return simhash.Hash.FillBytes(make([]byte, sizeInBytes))
+}
+
+func PackSimhashToBytes(simhash *Simhash, bitLength int) []byte {
+	b := PackSimhashToBytesBig(simhash, bitLength)
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
+	return b
+}
+
+func CustomHashFunc(data []byte) []byte {
+	hash := blake2b.Sum512(data)
+	return hash[:]
 }
