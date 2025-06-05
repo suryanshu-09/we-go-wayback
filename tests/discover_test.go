@@ -5,8 +5,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
-	s "github.com/suryanshu-09/simhash/simhash"
+	"github.com/redis/go-redis/v9"
+	s "github.com/suryanshu-09/simhash"
 	d "github.com/suryanshu-09/we-go-wayback/waybackdiscoverdiff"
 )
 
@@ -157,32 +159,6 @@ func assertCalculateSimhash(t testing.TB, got, want string) {
 	}
 }
 
-// var cfg = d.CFG{
-// 	Simhash: d.SimhashConfig{
-// 		Size:        256,
-// 		ExpireAfter: 86400,
-// 	},
-// 	Redis: d.RedisConfig{
-// 		URL:             "redis://localhost:6379/1",
-// 		DecodeResponses: true,
-// 		Timeout:         10,
-// 	},
-// 	Threads: 5,
-// 	Snapshots: d.SnapshotsConfig{
-// 		NumberPerYear: -1,
-// 		NumberPerPage: 600,
-// 	},
-// }
-
-// TODO: redis mock
-// func TestWorkerDownload(t *testing.T) {
-// 	t.Run("Redis WBM redirect", func(t *testing.T) {
-// 		discover := d.Discover{Cfg: cfg}
-// 		discover.Url = "https://iskme.org"
-// 		discover.DownloadCapture("20190103133511")
-// 	})
-// }
-
 func TestHash(t *testing.T) {
 	t.Run("test regular hash", func(t *testing.T) {
 		features := map[string]int{
@@ -305,5 +281,31 @@ func assertHash(t testing.TB, features map[string]int, hSize int, hashFuncs ...s
 
 	if len(gotBytes) != wantBytesLen {
 		t.Errorf("got: %d\nwant: %d", len(gotBytes), wantBytesLen)
+	}
+}
+
+var cfg = d.CFG{
+	Simhash: d.CFGSimhash{
+		Size:        256,
+		ExpireAfter: 86400,
+	},
+	Redis: &redis.Options{
+		Addr:        "redis://localhost:6379/1",
+		DialTimeout: 10 * time.Second,
+	},
+	Threads: 5,
+	Snapshots: d.Snapshots{
+		NumberPerYear: -1,
+		NumberPerPage: 600,
+	},
+}
+
+func TestDownloadCapture(t *testing.T) {
+	d := d.NewDiscover(cfg) // stub redis and logger as needed
+	d.Url = "https://iskme.org"
+
+	data := d.DownloadCapture("20190103133511")
+	if data == nil {
+		t.Error("expected capture data, got nil")
 	}
 }

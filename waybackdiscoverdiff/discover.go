@@ -1,18 +1,31 @@
 package waybackdiscoverdiff
 
 import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"log/slog"
 	"math/big"
+	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
-	s "github.com/suryanshu-09/simhash/simhash"
+	"github.com/crossedbot/simplesurt"
+	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+	s "github.com/suryanshu-09/simhash"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/net/html"
 )
 
-// TODO: Discover Class
-// DONE: ExtractHTMLFeatures
+// TODO: Implement Statsd
+// TODO: Implement pprof
 
 // Process HTML document and get key features as text. Steps:
 // kill all script and style elements
@@ -123,4 +136,315 @@ func PackSimhashToBytes(simhash *Simhash, bitLength int) []byte {
 func CustomHashFunc(data []byte) []byte {
 	hash := blake2b.Sum512(data)
 	return hash[:]
+}
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+var (
+	maxDownloadErrors  = 10
+	maxCaptureDownload = 1000000
+)
+
+type CFGSimhash struct {
+	Size        int
+	ExpireAfter int
+}
+
+type Snapshots struct {
+	NumberPerYear int
+	NumberPerPage int
+}
+
+type CFG struct {
+	Simhash      CFGSimhash
+	Redis        *redis.Options
+	Threads      int
+	Snapshots    Snapshots
+	CdxAuthToken string
+}
+
+type Discover struct {
+	simhashSize     int
+	simhashExpire   int
+	http            *http.Client
+	request         map[string]string
+	redis           *redis.Client
+	maxWorkers      int
+	snapshotsNumber int
+	downloadErrors  int
+	log             *slog.Logger
+	seen            map[string]string
+	Url             string
+	ctx             context.Context
+	jobId           string
+	state           map[string]string
+}
+
+func NewDiscover(cfg CFG) *Discover {
+	if cfg.Simhash.Size > 512 {
+		panic("do not support simhash longer than 512")
+	}
+
+	cdxAuthToken := cfg.CdxAuthToken
+
+	requestHeaders := map[string]string{
+		"User-Agent":      "wayback-discover-diff",
+		"Accept-Encoding": "gzip,deflate",
+		"Connection":      "keep-alive",
+	}
+	if cdxAuthToken != "" {
+		requestHeaders["cookie"] = fmt.Sprintf("cdx_auth_token=%s", cdxAuthToken)
+	}
+
+	httpTransport := &http.Transport{
+		MaxIdleConns:    50,
+		MaxConnsPerHost: 50,
+		IdleConnTimeout: 20 * time.Second,
+	}
+
+	d := &Discover{
+		simhashSize:   cfg.Simhash.Size,
+		simhashExpire: cfg.Simhash.ExpireAfter,
+		http: &http.Client{
+			Timeout:   20 * time.Second,
+			Transport: httpTransport,
+		},
+		request:         requestHeaders,
+		redis:           redis.NewClient(cfg.Redis),
+		maxWorkers:      cfg.Threads,
+		snapshotsNumber: cfg.Snapshots.NumberPerYear,
+		downloadErrors:  0,
+		log:             slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		seen:            make(map[string]string),
+	}
+	return d
+}
+
+func (d *Discover) DownloadCapture(ts string) []byte {
+	d.log.Info("fetching capture", "ts", ts, "url", d.Url)
+
+	captureURL := fmt.Sprintf("https://web.archive.org/web/%sid_/%s", ts, d.Url)
+	req, err := http.NewRequest("GET", captureURL, nil)
+	if err != nil {
+		d.downloadErrors++
+		d.log.Error("cannot create request", "ts", ts, "url", d.Url, "err", err)
+		return nil
+	}
+
+	for key, value := range d.request {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := d.http.Do(req)
+	if err != nil {
+		d.downloadErrors++
+		d.log.Error("cannot fetch capture", "ts", ts, "url", d.Url, "err", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	limitedReader := io.LimitReader(resp.Body, int64(maxCaptureDownload))
+	data, err := io.ReadAll(limitedReader)
+	if err != nil {
+		d.downloadErrors++
+		d.log.Error("cannot read response body", "ts", ts, "url", d.Url, "err", err)
+		return nil
+	}
+
+	ctype := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(ctype, "text") || strings.Contains(ctype, "html") {
+		return data
+	}
+
+	return nil
+}
+
+// TODO: USE pprof
+func (d *Discover) StartProfiling(snapshot, index any) {
+}
+
+type TimestampSimhash struct {
+	Timestamp string
+	Simhash   string
+}
+
+func (d *Discover) GetCalc(capture string) *TimestampSimhash {
+	captureArr := strings.Split(capture, " ")
+	if len(captureArr) != 2 {
+		d.log.Error("invalid capture format", "capture", capture)
+		return nil
+	}
+	timestamp := captureArr[0]
+	digest := captureArr[1]
+
+	simhashEnc, seen := d.seen[digest]
+	if seen {
+		d.log.Info("already seen", "digest", digest)
+		return &TimestampSimhash{timestamp, simhashEnc}
+	}
+
+	if d.downloadErrors >= maxDownloadErrors {
+		d.log.Error("consecutive download errors", "downloadErrors", d.downloadErrors, "url", d.Url)
+		return nil
+	}
+
+	responseData := d.DownloadCapture(timestamp)
+	if len(responseData) > 0 {
+		data := ExtractHTMLFeatures(string(responseData))
+		if len(data) > 0 {
+			d.log.Info("calculating simhash")
+			simhash := s.NewSimhash(data, s.WithF(d.simhashSize), s.WithHashFunc(CustomHashFunc))
+
+			simhashBytes := PackSimhashToBytes(&Simhash{Hash: simhash.Value, BitLength: simhash.F}, d.simhashSize)
+			simhashEnc := base64.StdEncoding.EncodeToString(simhashBytes)
+
+			d.seen[digest] = simhashEnc
+			return &TimestampSimhash{timestamp, simhashEnc}
+		}
+	}
+
+	return nil
+}
+
+func (d *Discover) updateState(state map[string]string) {
+	d.state = state
+}
+
+func (d *Discover) GetState() map[string]string {
+	return d.state
+}
+
+func (d *Discover) Run(URL, year string, created time.Time) map[string]any {
+	d.jobId = uuid.New().String()
+
+	pUrl, _ := url.Parse(URL)
+	d.Url = string(pUrl.String())
+	d.downloadErrors = 0
+	d.log.Info("Start calculating simhashes")
+	wait := time.Since(created).Milliseconds()
+
+	if d.Url == "" {
+		d.log.Error("did not give url parameter")
+		return map[string]any{"status": "error", "info": "URL is required."}
+	}
+	if year == "" {
+		d.log.Error("did not give year parameter")
+		return map[string]any{"status": "error", "info": "Year is required."}
+	}
+
+	d.updateState(map[string]string{"PENDING": fmt.Sprintf("Fetching %s captures for year %s", URL, year)})
+
+	resp := d.FetchCDX(URL, year)
+	if resp["status"] == "error" {
+		return resp
+	}
+
+	captures := resp["captures"].([]string)
+	d.seen = make(map[string]string)
+	finalResults := make(map[string]string)
+
+	numWorkers := d.maxWorkers
+	captureChan := make(chan string)
+	resultChan := make(chan TimestampSimhash)
+	var wg sync.WaitGroup
+
+	for range numWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for capture := range captureChan {
+				if result := d.GetCalc(capture); result != nil {
+					resultChan <- *result
+				}
+			}
+		}()
+	}
+
+	go func() {
+		for _, capture := range captures {
+			captureChan <- capture
+		}
+		close(captureChan)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	count := 0
+	total := len(captures)
+	for res := range resultChan {
+		finalResults[res.Timestamp] = res.Simhash
+		count++
+		if count%10 == 0 {
+			d.updateState(map[string]string{"PENDING": fmt.Sprintf("Processed %d out of %d captures", count, total)})
+		}
+	}
+
+	finLen := strconv.Itoa(len(finalResults))
+	d.log.Info("final results", "final results length", finLen, "url", d.Url, "year", year)
+
+	if len(finalResults) > 0 {
+		urlkey, _ := simplesurt.Format(d.Url)
+		err := d.redis.HMSet(d.ctx, urlkey, finalResults).Err()
+		if err != nil {
+			d.log.Error("cannot write simhashes to Redis", "url", d.Url, "error", err)
+		}
+		d.redis.Expire(d.ctx, urlkey, time.Duration(d.simhashExpire)*time.Second)
+	}
+
+	duration := time.Since(created).Seconds()
+	d.log.Info("Simhash calculation finished in", "duration", duration)
+	return map[string]any{"duration": fmt.Sprintf("%.2f", duration), "wait": wait}
+}
+
+func (d *Discover) FetchCDX(URL, year string) map[string]any {
+	d.log.Info("fetching CDX", "url", URL, "year", year)
+
+	params := url.Values{}
+	params.Set("url", URL)
+	params.Set("from", year)
+	params.Set("to", year)
+	params.Set("statuscode", "200")
+	params.Set("fl", "timestamp,digest")
+	params.Set("collapse", "timestamp:9")
+	if d.snapshotsNumber != -1 {
+		params.Set("limit", strconv.Itoa(d.snapshotsNumber))
+	}
+
+	reqUrl := fmt.Sprintf("https://web.archive.org/web/timemap?%s", params.Encode())
+	resp, err := d.http.Get(reqUrl)
+	if err != nil {
+		d.log.Error("HTTP request failed", "error", err)
+		return map[string]any{"status": "error", "info": err.Error()}
+	}
+	defer resp.Body.Close()
+
+	d.log.Info("finished fetching timestamps", "url", URL, "year", year)
+
+	if resp.StatusCode != http.StatusOK {
+		return map[string]any{"status": "error", "info": fmt.Sprintf("unexpected status code: %d", resp.StatusCode)}
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return map[string]any{"status": "error", "info": err.Error()}
+	}
+
+	if len(body) == 0 {
+		d.log.Info("no captures found", "url", URL, "year", year)
+		urlkey, _ := simplesurt.Format(URL)
+		_ = d.redis.HSet(d.ctx, urlkey, year, -1).Err()
+		_ = d.redis.Expire(d.ctx, urlkey, time.Duration(d.simhashExpire)*time.Second).Err()
+
+		return map[string]any{"status": "error", "info": fmt.Sprintf("No captures of %s for year %s", URL, year)}
+	}
+
+	captures := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(captures) > 0 {
+		return map[string]any{"status": "success", "captures": captures}
+	}
+
+	return map[string]any{"status": "error", "info": fmt.Sprintf("No captures of %s for year %s", URL, year)}
 }
