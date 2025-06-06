@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,9 +24,6 @@ import (
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/net/html"
 )
-
-// TODO: Implement Statsd
-// TODO: Implement pprof
 
 // Process HTML document and get key features as text. Steps:
 // kill all script and style elements
@@ -101,6 +99,9 @@ type Simhash struct {
 	BitLength int
 }
 
+// """Calculate simhash for features in a dict. `features_dict` contains data
+// like {'text': weight}
+// """
 func CalculateSimhash(features map[string]int, bitLength int, hashFuncs ...s.HashFunc) (simhash Simhash) {
 	var hash *s.Simhash
 	if len(hashFuncs) > 0 && hashFuncs[0] != nil {
@@ -133,12 +134,18 @@ func PackSimhashToBytes(simhash *Simhash, bitLength int) []byte {
 	return b
 }
 
+// """Required by Simhash
+// """
 func CustomHashFunc(data []byte) []byte {
 	hash := blake2b.Sum512(data)
 	return hash[:]
 }
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+// # If a simhash calculation for a URL & year does more than
+// # `max_download_errors`, stop it to avoid pointless requests. The captures
+// # are not text/html or there is a problem with the WBM.
 
 var (
 	maxDownloadErrors  = 10
@@ -220,7 +227,14 @@ func NewDiscover(cfg CFG) *Discover {
 	return d
 }
 
+// """Download capture data from the WBM and update job status. Return
+// data only when its text or html. On download error, increment download_errors
+// which will stop the task after 10 errors. Fetch data up to a limit
+// to avoid getting too much (which is unnecessary) and have a consistent
+// operation time.
+// """
 func (d *Discover) DownloadCapture(ts string) []byte {
+	StatsdInc("download-capture", 1)
 	d.log.Info("fetching capture", "ts", ts, "url", d.Url)
 
 	captureURL := fmt.Sprintf("https://web.archive.org/web/%sid_/%s", ts, d.Url)
@@ -238,6 +252,7 @@ func (d *Discover) DownloadCapture(ts string) []byte {
 	resp, err := d.http.Do(req)
 	if err != nil {
 		d.downloadErrors++
+		StatsdInc("download-error", 1)
 		d.log.Error("cannot fetch capture", "ts", ts, "url", d.Url, "err", err)
 		return nil
 	}
@@ -259,10 +274,36 @@ func (d *Discover) DownloadCapture(ts string) []byte {
 	return nil
 }
 
-// TODO: USE pprof
-func (d *Discover) StartProfiling(snapshot, index any) {
+// """Used for performance testing only.
+// """
+
+func (d *Discover) StartProfiling(snapshot, index string) {
+	f, err := os.Create("profile.prof")
+	if err != nil {
+		d.log.Error("failed to create profile file", "error", err)
+		return
+	}
+	defer f.Close()
+
+	// Start CPU profiling
+	if err := pprof.StartCPUProfile(f); err != nil {
+		d.log.Error("could not start CPU profile", "error", err)
+		return
+	}
+	defer pprof.StopCPUProfile()
+
+	// Run the actual function
+	capture := fmt.Sprintf("%s %s", snapshot, index)
+	_ = d.GetCalc(capture)
 }
 
+// """if a capture with an equal digest has been already processed,
+// return cached simhash and avoid redownloading and processing. Else,
+// download capture, extract HTML features and calculate simhash.
+// If there are already too many download failures, return None without
+// any processing to avoid pointless requests.
+// Return None if any problem occurs (e.g. HTTP error or cannot calculate)
+// """
 type TimestampSimhash struct {
 	Timestamp string
 	Simhash   string
@@ -284,6 +325,7 @@ func (d *Discover) GetCalc(capture string) *TimestampSimhash {
 	}
 
 	if d.downloadErrors >= maxDownloadErrors {
+		StatsdInc("multiple-consecutive-errors", 1)
 		d.log.Error("consecutive download errors", "downloadErrors", d.downloadErrors, "url", d.Url)
 		return nil
 	}
@@ -292,6 +334,7 @@ func (d *Discover) GetCalc(capture string) *TimestampSimhash {
 	if len(responseData) > 0 {
 		data := ExtractHTMLFeatures(string(responseData))
 		if len(data) > 0 {
+			StatsdInc("calculate-simhash", 1)
 			d.log.Info("calculating simhash")
 			simhash := s.NewSimhash(data, s.WithF(d.simhashSize), s.WithHashFunc(CustomHashFunc))
 
@@ -315,6 +358,7 @@ func (d *Discover) GetState() map[string]string {
 }
 
 func (d *Discover) Run(URL, year string, created time.Time) map[string]any {
+	timeStarted := time.Now()
 	d.jobId = uuid.New().String()
 
 	pUrl, _ := url.Parse(URL)
@@ -322,6 +366,7 @@ func (d *Discover) Run(URL, year string, created time.Time) map[string]any {
 	d.downloadErrors = 0
 	d.log.Info("Start calculating simhashes")
 	wait := time.Since(created).Milliseconds()
+	StatsdTiming("task-wait", int(wait))
 
 	if d.Url == "" {
 		d.log.Error("did not give url parameter")
@@ -394,11 +439,14 @@ func (d *Discover) Run(URL, year string, created time.Time) map[string]any {
 		d.redis.Expire(d.ctx, urlkey, time.Duration(d.simhashExpire)*time.Second)
 	}
 
-	duration := time.Since(created).Seconds()
+	duration := time.Since(timeStarted).Milliseconds()
+	StatsdTiming("task-duration", int(duration))
 	d.log.Info("Simhash calculation finished in", "duration", duration)
-	return map[string]any{"duration": fmt.Sprintf("%.2f", duration), "wait": wait}
+	return map[string]any{"duration": fmt.Sprintf("%.2f", float64(duration))}
 }
 
+// """Make a CDX query for timestamp and digest for a specific year.
+// """
 func (d *Discover) FetchCDX(URL, year string) map[string]any {
 	d.log.Info("fetching CDX", "url", URL, "year", year)
 
