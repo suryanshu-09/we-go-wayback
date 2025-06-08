@@ -41,7 +41,7 @@ var AsynqServer *asynq.Server
 
 var redisConnOpt = asynq.RedisClientOpt{
 	Addr: "localhost:6379",
-	DB:   3,
+	DB:   1,
 }
 
 // Asynq client (used to enqueue tasks)

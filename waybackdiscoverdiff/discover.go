@@ -220,7 +220,7 @@ func NewDiscover(cfg CFG) *Discover {
 			Transport: httpTransport,
 		},
 		request:         requestHeaders,
-		redis:           redis.NewClient(cfg.Redis),
+		redis:           RedisClient,
 		maxWorkers:      cfg.Threads,
 		snapshotsNumber: cfg.Snapshots.NumberPerYear,
 		downloadErrors:  0,
