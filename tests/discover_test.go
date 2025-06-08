@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/go-redis/redis/v8"
+	"github.com/smira/go-statsd"
 	s "github.com/suryanshu-09/simhash"
 	d "github.com/suryanshu-09/we-go-wayback/waybackdiscoverdiff"
 )
@@ -301,7 +302,8 @@ var cfg = d.CFG{
 }
 
 func TestDownloadCapture(t *testing.T) {
-	d := d.NewDiscover(cfg) // stub redis and logger as needed
+	d.STATSDClient = statsd.NewClient("localhost:8125")
+	d := d.NewDiscover(cfg)
 	d.Url = "https://iskme.org"
 
 	data := d.DownloadCapture("20190103133511")

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/go-redis/redismock/v9"
-	"github.com/redis/go-redis/v9"
+	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redismock/v8"
 	u "github.com/suryanshu-09/we-go-wayback/waybackdiscoverdiff"
 )
 
@@ -76,11 +76,19 @@ func StubRedis() {
 	// 5. nonexistingdomain.org => no keys
 	keyNonExist := "org,nonexistingdomain)/"
 	clientMock.ExpectHKeys(keyNonExist).SetVal([]string{"1999"})
+	// 6. example.com fallback (2014102 => year = 2014) => simulate presence of HGET key
+	clientMock.ExpectHGet(keyExample, "2014").SetVal("o52rOf0Hi2o=")
+	clientMock.ExpectHGet(keyExample, "2014102").SetVal("-1")
+
+	// 7. other.com fallback (20141021062411 => year = 2014) => simulate presence of HGET key
+	clientMock.ExpectHGet(keyOther, "2014").SetVal("-1")
+	clientMock.ExpectHGet(keyOther, "20141021062411").SetVal("-1")
 }
 
 func TestUrlIsValid(t *testing.T) {
 	input := map[string]bool{
 		"http://example.com/":       true,
+		"example.com/":              true,
 		"other":                     false,
 		"torrent:something.gr/file": false,
 		"tel:00302310123456":        false,
@@ -89,13 +97,12 @@ func TestUrlIsValid(t *testing.T) {
 	}
 
 	for url, result := range input {
-		if u.UrlIsValid(url) != result {
-			t.Errorf("url:%s\ngot:%t\nwant:%t\n", url, u.UrlIsValid(url), result)
+		if u.UrlIsValid(&url) != result {
+			t.Errorf("url:%s\ngot:%t\nwant:%t\n", url, u.UrlIsValid(&url), result)
 		}
 	}
 }
 
-// Mock Fails, but should work irl
 func TestYearSimhash(t *testing.T) {
 	type input struct {
 		url   string
@@ -131,5 +138,44 @@ func TestYearSimhash(t *testing.T) {
 				t.Errorf("got:%d\nwant:%d", len(res), count)
 			}
 		})
+	}
+}
+
+func TestGetTimestampSimhash(t *testing.T) {
+	input := [][]string{
+		{"http://example.com", "20141021062411", "o52rOf0Hi2o="},
+		{"http://example.com", "2014102", ""},
+		{"http://other.com", "20141021062411", ""},
+	}
+
+	for _, inputArr := range input {
+		url, timestamp, expectedSimhash := inputArr[0], inputArr[1], inputArr[2]
+
+		StubRedis()
+		clientMock.MatchExpectationsInOrder(false)
+
+		t.Run(fmt.Sprintf("test_%s_%s", url, timestamp), func(t *testing.T) {
+			result := u.GetTimestampSimhash(redisClient, url, timestamp)
+
+			noCaptures := u.HttpResponse{Status: "error", Message: "NO_CAPTURES"}
+			captureNotFound := u.HttpResponse{Status: "error", Message: "CAPTURE_NOT_FOUND"}
+
+			if expectedSimhash != "" {
+				got := result.Simhash.(string)
+				if got != expectedSimhash {
+					t.Errorf("got: %s, want: %s", got, expectedSimhash)
+				}
+			} else if url == "http://other.com" {
+				if result != noCaptures {
+					t.Errorf("got: %+v, want: %+v", result, noCaptures)
+				}
+			} else {
+				if result != captureNotFound {
+					t.Errorf("got: %+v, want: %+v", result, captureNotFound)
+				}
+			}
+		})
+
+		clientMock.ExpectationsWereMet()
 	}
 }
