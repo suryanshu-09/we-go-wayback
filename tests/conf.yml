@@ -3,7 +3,7 @@ simhash:
   expire_after: 86400
 
 redis:
-  url: "redis://localhost:6379/1"
+  url: "localhost:6379"
   decode_responses: True
   health_check_interval: 30
   max_connections: 100
@@ -19,8 +19,8 @@ test_redis:
 cdx_auth_token: "xxxx-yyy-zzz-www-xxxxx"
 
 celery:
-  result_backend: "redis://localhost:6379/2"
-  broker_url: "redis://localhost:6379/3"
+  result_backend: "localhost:6379"
+  broker_url: "localhost:6379"
   task_default_queue: "wayback_discover_diff"
   task_soft_time_limit: 7200
   worker_max_tasks_per_child: 100
