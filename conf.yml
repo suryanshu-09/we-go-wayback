@@ -19,7 +19,7 @@ test_redis:
 cdx_auth_token: "xxxx-yyy-zzz-www-xxxxx"
 
 celery:
-  result_backend: localhost:6379"
+  result_backend: "localhost:6379"
   broker_url: "localhost:6379"
   task_default_queue: "wayback_discover_diff"
   task_soft_time_limit: 7200

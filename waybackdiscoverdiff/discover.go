@@ -3,13 +3,16 @@ package waybackdiscoverdiff
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -18,8 +21,8 @@ import (
 	"unicode"
 
 	"github.com/crossedbot/simplesurt"
-	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
+	"github.com/go-redis/redis/v8"
+	"github.com/hibiken/asynq"
 	s "github.com/suryanshu-09/simhash"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/net/html"
@@ -63,7 +66,7 @@ func ExtractHTMLFeatures(htmlContent string) map[string]int {
 						continue
 					}
 
-					if r == '\\' && str[i+1] == 'x' {
+					if r == '\\' && i+1 < len(str) && str[i+1] == 'x' {
 						builder.WriteRune(r)
 						continue
 					}
@@ -182,9 +185,9 @@ type Discover struct {
 	log             *slog.Logger
 	seen            map[string]string
 	Url             string
+	Year            string
 	ctx             context.Context
 	jobId           string
-	state           map[string]string
 }
 
 func NewDiscover(cfg CFG) *Discover {
@@ -222,7 +225,7 @@ func NewDiscover(cfg CFG) *Discover {
 		snapshotsNumber: cfg.Snapshots.NumberPerYear,
 		downloadErrors:  0,
 		log:             slog.New(slog.NewTextHandler(os.Stdout, nil)),
-		seen:            make(map[string]string),
+		seen:            make(map[string]string, 0),
 	}
 	return d
 }
@@ -297,6 +300,11 @@ func (d *Discover) StartProfiling(snapshot, index string) {
 	_ = d.GetCalc(capture)
 }
 
+type TimestampSimhash struct {
+	Timestamp string
+	Simhash   string
+}
+
 // """if a capture with an equal digest has been already processed,
 // return cached simhash and avoid redownloading and processing. Else,
 // download capture, extract HTML features and calculate simhash.
@@ -304,11 +312,6 @@ func (d *Discover) StartProfiling(snapshot, index string) {
 // any processing to avoid pointless requests.
 // Return None if any problem occurs (e.g. HTTP error or cannot calculate)
 // """
-type TimestampSimhash struct {
-	Timestamp string
-	Simhash   string
-}
-
 func (d *Discover) GetCalc(capture string) *TimestampSimhash {
 	captureArr := strings.Split(capture, " ")
 	if len(captureArr) != 2 {
@@ -349,46 +352,153 @@ func (d *Discover) GetCalc(capture string) *TimestampSimhash {
 	return nil
 }
 
-func (d *Discover) updateState(state map[string]string) {
-	d.state = state
+func SetJobStatus(ctx context.Context, rdb *redis.Client, jobId, url, year, status string) {
+	if jobId == "" {
+		log.Printf("Warning: Empty jobId provided to SetJobStatus, status=%s", status)
+		return
+	}
+	value := fmt.Sprintf("%s|%s|%s", status, url, year)
+	err := rdb.Set(ctx, jobId, value, time.Hour).Err()
+	if err != nil {
+		log.Printf("Error setting job status in Redis: %v (jobId: %s, status: %s)", err, jobId, status)
+	} else {
+		log.Printf("Job status updated successfully: jobId=%s, status=%s", jobId, status)
+	}
 }
 
-func (d *Discover) GetState() map[string]string {
-	return d.state
+func makeStatusKey(url, year string) string {
+	simple, _ := simplesurt.Format(url)
+
+	re := regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*://\(([^)]+),\)$`)
+	urlkey := re.ReplaceAllString(simple, "$1)/")
+	return fmt.Sprintf("taskstatus:%s:%s", urlkey, year)
 }
 
-func (d *Discover) Run(URL, year string, created time.Time) map[string]any {
+type TaskStatus struct {
+	TaskType    string `json:"task_type"`
+	Status      string `json:"status"`
+	Description string `json:"description"`
+	ID          string `json:"id"`
+}
+
+func SetTaskStatus(ctx context.Context, rdb *redis.Client, taskType, url, year, status, description, jobId string) error {
+	if url == "" || year == "" {
+		return fmt.Errorf("missing required url or year for task status")
+	}
+
+	key := makeStatusKey(url, year)
+
+	val := TaskStatus{
+		TaskType:    taskType,
+		Status:      status,
+		Description: description,
+		ID:          jobId,
+	}
+
+	jsonVal, err := json.Marshal(val)
+	if err != nil {
+		return err
+	}
+
+	err = rdb.Set(ctx, key, jsonVal, time.Duration(SimhashExpireAfter)*time.Second).Err()
+	if err != nil {
+		log.Printf("Error setting task status in Redis: %v (key: %s, status: %s)", err, key, status)
+		return err
+	}
+	log.Printf("Task status updated successfully: key=%s, status=%s, jobId=%s", key, status, jobId)
+	return nil
+}
+
+type HttpResponse struct {
+	Status   string `json:"status"`
+	Info     any    `json:"info,omitempty"`
+	Captures any    `json:"captures,omitempty"`
+	Simhash  any    `json:"simhash,omitempty"`
+	Message  any    `json:"message,omitempty"`
+	JobId    any    `json:"job_id,omitempty"`
+	Duration any    `json:"duration,omitempty"`
+}
+
+const TypeDiscover = "discover:run"
+
+type DiscoverPayload struct {
+	URL     string
+	Year    string
+	Created time.Time
+	JobId   string
+}
+
+func NewDiscoverTask(URL, year, JobId string, created time.Time) (*asynq.Task, error) {
+	payload, err := json.Marshal(DiscoverPayload{URL: URL, Year: year, Created: created, JobId: JobId})
+	if err != nil {
+		return nil, err
+	}
+
+	task := asynq.NewTask(TypeDiscover, payload)
+	return task, nil
+}
+
+func (d *Discover) DiscoverTaskHandler(ctx context.Context, t *asynq.Task) error {
 	timeStarted := time.Now()
-	d.jobId = uuid.New().String()
+	var payload DiscoverPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		d.log.Error("Failed to unmarshal task payload", "error", err)
+		SetJobStatus(ctx, d.redis, d.jobId, "", "", "ERROR")
+		return fmt.Errorf("json.Unmarshal failed: %v: %w", err, asynq.SkipRetry)
+	}
 
-	pUrl, _ := url.Parse(URL)
-	d.Url = string(pUrl.String())
+	d.log.Info("Task payload unmarshaled successfully", "jobId", payload.JobId, "url", payload.URL, "year", payload.Year)
+	d.jobId = payload.JobId
+	// Use the provided context instead of the struct's context
+	d.ctx = ctx
+
+	pUrl, err := url.ParseRequestURI(payload.URL)
+	if err != nil {
+		d.log.Error("invalid URL", "url", payload.URL)
+		SetJobStatus(ctx, d.redis, d.jobId, "", "", "ERROR")
+		return fmt.Errorf("invalid url: %w", asynq.SkipRetry)
+	}
+	d.Url = pUrl.String()
+	d.Year = payload.Year
+
 	d.downloadErrors = 0
-	d.log.Info("Start calculating simhashes")
-	wait := time.Since(created).Milliseconds()
+
+	d.log.Info("Job ID", "jobId", d.jobId)
+	wait := time.Since(payload.Created).Milliseconds()
 	StatsdTiming("task-wait", int(wait))
 
-	if d.Url == "" {
-		d.log.Error("did not give url parameter")
-		return map[string]any{"status": "error", "info": "URL is required."}
-	}
-	if year == "" {
-		d.log.Error("did not give year parameter")
-		return map[string]any{"status": "error", "info": "Year is required."}
+	if d.Url == "" || d.Year == "" {
+		d.log.Error("missing URL or year", "url", d.Url, "year", d.Year)
+		SetTaskStatus(ctx, d.redis, TypeDiscover, d.Url, d.Year, "FAILED", "Missing URL or year", d.jobId)
+		SetJobStatus(ctx, d.redis, d.jobId, d.Url, d.Year, "FAILED")
+		return fmt.Errorf("missing required fields: %w", asynq.SkipRetry)
 	}
 
-	d.updateState(map[string]string{"PENDING": fmt.Sprintf("Fetching %s captures for year %s", URL, year)})
-
-	resp := d.FetchCDX(URL, year)
-	if resp["status"] == "error" {
-		return resp
+	d.log.Info("Setting task status to PENDING", "url", d.Url, "year", d.Year, "jobId", d.jobId)
+	if err = SetTaskStatus(ctx, d.redis, TypeDiscover, d.Url, d.Year, "PENDING", fmt.Sprintf("Fetching captures for %s", d.Year), d.jobId); err != nil {
+		d.log.Error("SetTaskStatus failed", "error", err)
+	} else {
+		d.log.Info("Task status set to PENDING successfully")
 	}
 
-	captures := resp["captures"].([]string)
-	d.seen = make(map[string]string)
+	d.log.Info("Setting job status to PENDING", "jobId", d.jobId)
+	SetJobStatus(ctx, d.redis, d.jobId, d.Url, d.Year, "PENDING")
+	d.log.Info("Start calculating simhashes")
+
+	resp := d.FetchCDX(d.Url, d.Year)
+	if resp.Status == "error" {
+		d.log.Error("FetchCDX failed", "url", d.Url, "year", d.Year)
+
+		d.log.Info("Setting task and job status to FAILED", "jobId", d.jobId)
+		SetTaskStatus(ctx, d.redis, TypeDiscover, d.Url, d.Year, "FAILED", "FetchCDX failed", d.jobId)
+		SetJobStatus(ctx, d.redis, d.jobId, d.Url, d.Year, "FAILED")
+		return fmt.Errorf("FetchCDX failed: %v", asynq.SkipRetry)
+	}
+
+	captures := resp.Info.([]string)
 	finalResults := make(map[string]string)
-
 	numWorkers := d.maxWorkers
+
 	captureChan := make(chan string)
 	resultChan := make(chan TimestampSimhash)
 	var wg sync.WaitGroup
@@ -417,37 +527,66 @@ func (d *Discover) Run(URL, year string, created time.Time) map[string]any {
 		close(resultChan)
 	}()
 
-	count := 0
-	total := len(captures)
 	for res := range resultChan {
 		finalResults[res.Timestamp] = res.Simhash
-		count++
-		if count%10 == 0 {
-			d.updateState(map[string]string{"PENDING": fmt.Sprintf("Processed %d out of %d captures", count, total)})
-		}
 	}
 
 	finLen := strconv.Itoa(len(finalResults))
-	d.log.Info("final results", "final results length", finLen, "url", d.Url, "year", year)
+	d.log.Info("Final results", "count", finLen, "url", d.Url, "year", d.Year)
 
 	if len(finalResults) > 0 {
-		urlkey, _ := simplesurt.Format(d.Url)
-		err := d.redis.HMSet(d.ctx, urlkey, finalResults).Err()
+		simple, _ := simplesurt.Format(d.Url)
+
+		re := regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*://\(([^)]+),\)$`)
+		urlkey := re.ReplaceAllString(simple, "$1)/")
+		d.log.Info("Writing simhash results to Redis", "url", d.Url, "urlkey", urlkey, "count", len(finalResults))
+		err := d.redis.HMSet(ctx, urlkey, finalResults).Err()
 		if err != nil {
-			d.log.Error("cannot write simhashes to Redis", "url", d.Url, "error", err)
+			d.log.Error("Failed writing to Redis", "url", d.Url, "error", err)
+
+			d.log.Info("Setting task and job status to FAILED due to Redis write error", "jobId", d.jobId)
+			SetTaskStatus(ctx, d.redis, TypeDiscover, d.Url, d.Year, "FAILED", "Redis write failed", d.jobId)
+			SetJobStatus(ctx, d.redis, d.jobId, d.Url, d.Year, "FAILED")
+			return err
 		}
-		d.redis.Expire(d.ctx, urlkey, time.Duration(d.simhashExpire)*time.Second)
+		d.log.Info("Setting expiration for Redis key", "urlkey", urlkey, "seconds", d.simhashExpire)
+		if err := d.redis.Expire(ctx, urlkey, time.Duration(d.simhashExpire)*time.Second).Err(); err != nil {
+			d.log.Error("Failed setting expiration on Redis key", "urlkey", urlkey, "error", err)
+		}
 	}
 
 	duration := time.Since(timeStarted).Milliseconds()
 	StatsdTiming("task-duration", int(duration))
-	d.log.Info("Simhash calculation finished in", "duration", duration)
-	return map[string]any{"duration": fmt.Sprintf("%.2f", float64(duration))}
+	d.log.Info("Simhash calculation completed", "duration(ms)", duration)
+
+	d.log.Info("Setting task status to SUCCESS", "url", d.Url, "year", d.Year, "jobId", d.jobId, "duration", duration)
+	statusKey := makeStatusKey(d.Url, d.Year)
+	d.log.Info("Status key", "key", statusKey)
+
+	if err = SetTaskStatus(ctx, d.redis, TypeDiscover, d.Url, d.Year, "SUCCESS", fmt.Sprintf("Completed in %dms", duration), d.jobId); err != nil {
+		d.log.Error("SetTaskStatus failed", "error", err, "statusKey", statusKey)
+		return err
+	}
+
+	d.log.Info("Task status set to SUCCESS, setting job status", "jobId", d.jobId)
+	SetJobStatus(ctx, d.redis, d.jobId, d.Url, d.Year, "SUCCESS")
+
+	// Verify the task status was saved correctly
+	key := makeStatusKey(d.Url, d.Year)
+	val, getErr := d.redis.Get(ctx, key).Result()
+	if getErr != nil {
+		d.log.Error("Failed to verify task status", "key", key, "error", getErr)
+	} else {
+		d.log.Info("Verified task status in Redis", "key", key, "value", val)
+	}
+
+	d.log.Info("Task completed successfully", "jobId", d.jobId, "url", d.Url, "year", d.Year)
+	return nil
 }
 
 // """Make a CDX query for timestamp and digest for a specific year.
 // """
-func (d *Discover) FetchCDX(URL, year string) map[string]any {
+func (d *Discover) FetchCDX(URL, year string) HttpResponse {
 	d.log.Info("fetching CDX", "url", URL, "year", year)
 
 	params := url.Values{}
@@ -465,34 +604,34 @@ func (d *Discover) FetchCDX(URL, year string) map[string]any {
 	resp, err := d.http.Get(reqUrl)
 	if err != nil {
 		d.log.Error("HTTP request failed", "error", err)
-		return map[string]any{"status": "error", "info": err.Error()}
+		return HttpResponse{Status: "error", Info: err.Error()}
 	}
 	defer resp.Body.Close()
 
 	d.log.Info("finished fetching timestamps", "url", URL, "year", year)
 
-	if resp.StatusCode != http.StatusOK {
-		return map[string]any{"status": "error", "info": fmt.Sprintf("unexpected status code: %d", resp.StatusCode)}
-	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return map[string]any{"status": "error", "info": err.Error()}
+		return HttpResponse{Status: "error", Info: err.Error()}
 	}
 
 	if len(body) == 0 {
 		d.log.Info("no captures found", "url", URL, "year", year)
-		urlkey, _ := simplesurt.Format(URL)
+
+		simple, _ := simplesurt.Format(URL)
+
+		re := regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*://\(([^)]+),\)$`)
+		urlkey := re.ReplaceAllString(simple, "$1)/")
 		_ = d.redis.HSet(d.ctx, urlkey, year, -1).Err()
 		_ = d.redis.Expire(d.ctx, urlkey, time.Duration(d.simhashExpire)*time.Second).Err()
 
-		return map[string]any{"status": "error", "info": fmt.Sprintf("No captures of %s for year %s", URL, year)}
+		return HttpResponse{Status: "error", Info: fmt.Sprintf("No captures of %s for year %s", URL, year)}
 	}
 
 	captures := strings.Split(strings.TrimSpace(string(body)), "\n")
 	if len(captures) > 0 {
-		return map[string]any{"status": "success", "captures": captures}
+		return HttpResponse{Status: "succes", Info: captures}
 	}
 
-	return map[string]any{"status": "error", "info": fmt.Sprintf("No captures of %s for year %s", URL, year)}
+	return HttpResponse{Status: "error", Info: fmt.Sprintf("No captures of %s for year %s", URL, year)}
 }

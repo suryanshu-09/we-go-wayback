@@ -10,8 +10,6 @@ import (
 	"github.com/smira/go-statsd"
 )
 
-var STATSDClient = statsd.NewClient("localhost:8125")
-
 func Configure(host, port string) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
