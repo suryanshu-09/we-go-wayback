@@ -17,6 +17,7 @@ This app calculates and retrieves [Simhash](https://en.wikipedia.org/wiki/SimHas
 ```bash
 git clone https://github.com/yourname/we-go-wayback.git
 cd we-go-wayback
+docker compose up -d
 go run main.go
 ```
 
@@ -164,17 +165,3 @@ Edit `conf.yml` to set:
 - Redis connection
 - Snapshot/page limits
 - Simhash TTL
-
----
-
-## 🧪 Running
-
-```bash
-go run main.go
-```
-
----
-
-## 📜 License
-
-MIT

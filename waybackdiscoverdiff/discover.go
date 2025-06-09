@@ -344,7 +344,10 @@ func (d *Discover) GetCalc(capture string) *TimestampSimhash {
 			simhashBytes := PackSimhashToBytes(&Simhash{Hash: simhash.Value, BitLength: simhash.F}, d.simhashSize)
 			simhashEnc := base64.StdEncoding.EncodeToString(simhashBytes)
 
+			mut := &sync.Mutex{}
+			mut.Lock()
 			d.seen[digest] = simhashEnc
+			mut.Unlock()
 			return &TimestampSimhash{timestamp, simhashEnc}
 		}
 	}
