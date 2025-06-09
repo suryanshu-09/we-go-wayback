@@ -17,7 +17,7 @@ This app calculates and retrieves [Simhash](https://en.wikipedia.org/wiki/SimHas
 ```bash
 git clone https://github.com/yourname/we-go-wayback.git
 cd we-go-wayback
-./we-go-wayback
+go run main.go
 ```
 
 Run tests with
