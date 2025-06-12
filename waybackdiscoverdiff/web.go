@@ -40,7 +40,7 @@ func GetTaskStatus(ctx context.Context, rdb *redis.Client, url, year string) (*T
 		log.Printf("GetTaskStatus called with empty url or year")
 		return nil, fmt.Errorf("url and year are required")
 	}
-	
+
 	key := makeStatusKey(url, year)
 	log.Printf("Getting task status with key: %s", key)
 
@@ -70,8 +70,9 @@ func GetTaskStatus(ctx context.Context, rdb *redis.Client, url, year string) (*T
 // """
 
 func ServeRoot(w http.ResponseWriter, r *http.Request) {
-	version := "v0.1.0"
-	fmt.Fprintf(w, "wayback-discover-diff service version: %s", version)
+	version := "v0.1.1"
+	resp := fmt.Sprintf("wayback-discover-diff service version: %s", version)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // """Return simhash data for specific URL and year (optional),
@@ -204,7 +205,7 @@ func ServeCalculateSimhash(rdb *redis.Client) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, HttpResponse{Status: "error", Info: "error creating task"})
 			return
 		}
-	
+
 		info, err := AsynqClient.Enqueue(discoverTask, asynq.Queue("wayback_discover_diff"))
 		if err != nil {
 			log.Printf("ServeCalculateSimhash: Error enqueueing task: %v", err)
@@ -212,7 +213,7 @@ func ServeCalculateSimhash(rdb *redis.Client) http.HandlerFunc {
 			return
 		}
 		log.Printf("ServeCalculateSimhash: Task enqueued successfully: %s", info.ID)
-	
+
 		SetJobStatus(ctx, rdb, jobId, url_, year_, "PENDING")
 		err = SetTaskStatus(ctx, rdb, TypeDiscover, url_, year_, "PENDING", "Started the task", jobId)
 		if err != nil {

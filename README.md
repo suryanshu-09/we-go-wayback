@@ -21,6 +21,8 @@ docker compose up -d
 go run main.go
 ```
 
+![demo](demo.gif)
+
 Run tests with
 
 ```
