@@ -2,7 +2,7 @@
 
 A Golang rewrite of [wayback-discover-diff](https://github.com/internetarchive/wayback-discover-diff.git).
 
-This app calculates and retrieves [Simhash](https://en.wikipedia.org/wiki/SimHash) values for archived web captures via the Wayback Machine.
+This app calculates and retrieves [Simhash](https://github.com/suryanshu-09/simhash) values for archived web captures via the Wayback Machine.
 
 **Tech Stack**:
 
